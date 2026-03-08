@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/bbr/datastore"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/bbr/framework"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/bbr/handlers"
+	"sigs.k8s.io/gateway-api-inference-extension/pkg/bbr/plugins/apikey"
 )
 
 // ExtProcServerRunner provides methods to manage an external process server.
@@ -44,6 +45,7 @@ type ExtProcServerRunner struct {
 	Streaming       bool
 	RequestPlugins  []framework.RequestProcessor
 	ResponsePlugins []framework.ResponseProcessor
+	SecretStore     *apikey.SecretStore
 }
 
 func NewDefaultExtProcServerRunner(port int, streaming bool) *ExtProcServerRunner {
@@ -57,12 +59,22 @@ func NewDefaultExtProcServerRunner(port int, streaming bool) *ExtProcServerRunne
 
 // SetupWithManager sets up the runner with the given manager.
 func (r *ExtProcServerRunner) SetupWithManager(mgr ctrl.Manager) error {
-	// Create the configmap controller and register it with the manager
+	// Create the configmap controller and register it with the manager.
 	if err := (&controller.ConfigMapReconciler{
 		Datastore: r.Datastore,
 		Reader:    mgr.GetClient(),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("failed setting up ConfigMap Reconciler - %w", err)
+	}
+
+	// Create the secret controller for API key injection if a store is configured.
+	if r.SecretStore != nil {
+		if err := (&apikey.SecretReconciler{
+			Reader: mgr.GetClient(),
+			Store:  r.SecretStore,
+		}).SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("failed setting up Secret Reconciler - %w", err)
+		}
 	}
 
 	return nil

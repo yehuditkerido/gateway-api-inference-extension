@@ -18,6 +18,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -42,6 +43,7 @@ import (
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/bbr/handlers"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/bbr/metrics"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/bbr/plugins"
+	"sigs.k8s.io/gateway-api-inference-extension/pkg/bbr/plugins/apikey"
 	runserver "sigs.k8s.io/gateway-api-inference-extension/pkg/bbr/server"
 	logutil "sigs.k8s.io/gateway-api-inference-extension/pkg/common/observability/logging"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/common/observability/profiling"
@@ -55,6 +57,7 @@ func NewRunner() *Runner {
 		bbrExecutableName: "BBR",
 		requestPlugins:    []framework.RequestProcessor{},
 		customCollectors:  []prometheus.Collector{},
+		secretStore:       apikey.NewSecretStore(),
 	}
 }
 
@@ -66,6 +69,7 @@ type Runner struct {
 	requestPlugins []framework.RequestProcessor
 
 	customCollectors []prometheus.Collector
+	secretStore      *apikey.SecretStore
 }
 
 // WithExecutableName sets the name of the executable containing the runner.
@@ -134,14 +138,18 @@ func (r *Runner) Run(ctx context.Context) error {
 			return nil
 		}(),
 	}
-	// label "inference.networking.k8s.io/bbr-managed" = "true" is used for server-side filtering of configmaps.
-	// only the configmap objects with this label will be tracked by bbr.
+	// label "inference.networking.k8s.io/bbr-managed" = "true" is used for server-side filtering.
+	// Only ConfigMap and Secret objects with this label will be tracked by BBR.
+	managedLabelSelector := labels.SelectorFromSet(labels.Set{
+		framework.ManagedLabel: "true",
+	})
 	cacheOptions := cache.Options{
 		ByObject: map[client.Object]cache.ByObject{
 			&corev1.ConfigMap{}: {
-				Label: labels.SelectorFromSet(labels.Set{
-					"inference.networking.k8s.io/bbr-managed": "true",
-				}),
+				Label: managedLabelSelector,
+			},
+			&corev1.Secret{}: {
+				Label: managedLabelSelector,
 			},
 		},
 	}
@@ -207,6 +215,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		SecureServing:  opts.SecureServing,
 		Streaming:      opts.Streaming,
 		RequestPlugins: r.requestPlugins,
+		SecretStore:    r.secretStore,
 	}
 	if err := serverRunner.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to setup BBR controllers")
@@ -234,9 +243,23 @@ func (r *Runner) Run(ctx context.Context) error {
 	return nil
 }
 
-// registerInTreePlugins registers the factory functions of all known BBR plugins
+// registerInTreePlugins registers the factory functions of all known BBR plugins.
 func (r *Runner) registerInTreePlugins() {
 	framework.Register(plugins.BodyFieldToHeaderPluginType, plugins.BodyFieldToHeaderPluginFactory)
+	framework.Register(apikey.PluginType, r.apiKeyPluginFactory())
+}
+
+// apiKeyPluginFactory wraps apikey.Factory to inject the shared SecretStore
+// into every APIKeyInjectionPlugin instance created via the --plugin flag.
+func (r *Runner) apiKeyPluginFactory() framework.FactoryFunc {
+	return func(name string, params json.RawMessage) (framework.BBRPlugin, error) {
+		p, err := apikey.Factory(name, params)
+		if err != nil {
+			return nil, err
+		}
+		p.(*apikey.APIKeyInjectionPlugin).WithStore(r.secretStore)
+		return p, nil
+	}
 }
 
 // registerHealthServer adds the Health gRPC server as a Runnable to the given manager.

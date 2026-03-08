@@ -29,6 +29,8 @@ spec:
             response_body_mode: "NONE"
             request_trailer_mode: "SEND"
             response_trailer_mode: "SKIP"
+          mutation_rules:
+            allow_all_routing: true
           grpc_service:
             envoy_grpc:
               cluster_name: outbound|{{ .Values.bbr.port }}||{{ .Values.bbr.name }}.{{ .Release.Namespace }}.svc.cluster.local

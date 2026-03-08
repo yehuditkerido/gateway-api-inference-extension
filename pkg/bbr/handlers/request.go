@@ -20,6 +20,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"sort"
+	"strings"
 	"time"
 
 	eppb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -66,6 +69,29 @@ func (s *Server) HandleRequestBody(ctx context.Context, reqCtx *RequestContext, 
 	reqCtx.Request.SetHeader(BaseModelHeader, baseModel)
 	logger.Info("Base model from datastore", "baseModel", baseModel)
 
+	// --- DEMO ONLY: pretty-print the full request after plugin processing ---
+	mutatedHeaders := reqCtx.Request.MutatedHeaders()
+	var sb strings.Builder
+	sb.WriteString("\n\n========== Request after plugins processing ==========\n")
+	sb.WriteString("POST /v1/completions\n")
+	keys := make([]string, 0, len(reqCtx.Request.Headers))
+	for k := range reqCtx.Request.Headers {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		tag := ""
+		if _, isMutated := mutatedHeaders[k]; isMutated {
+			tag = "  <-- [ADDED/MODIFIED BY PLUGIN]"
+		}
+		sb.WriteString(fmt.Sprintf("  %s: %s%s\n", k, reqCtx.Request.Headers[k], tag))
+	}
+	bodyJSON, _ := json.MarshalIndent(reqCtx.Request.Body, "  ", "  ")
+	sb.WriteString(fmt.Sprintf("\n  Body:\n  %s\n", string(bodyJSON)))
+	sb.WriteString("======================================================\n\n")
+	os.Stderr.WriteString(sb.String())
+	// --- END DEMO ---
+
 	metrics.RecordSuccessCounter()
 
 	if s.streaming {
@@ -91,7 +117,6 @@ func (s *Server) HandleRequestBody(ctx context.Context, reqCtx *RequestContext, 
 			Response: &eppb.ProcessingResponse_RequestBody{
 				RequestBody: &eppb.BodyResponse{
 					Response: &eppb.CommonResponse{
-						// Necessary so that the new headers are used in the routing decision.
 						ClearRouteCache: true,
 						HeaderMutation: &eppb.HeaderMutation{
 							SetHeaders:    reqenvoy.GenerateHeadersMutation(reqCtx.Request.MutatedHeaders()),
